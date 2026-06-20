@@ -1,16 +1,11 @@
-/* ===== GLOBAL ===== */
-* {
-  box-sizing: border-box;
-}
+/* ===== BASE ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  margin: 0;
-  padding: 0;
-  background: #008080; /* Classic Win98 teal desktop */
-  font-family: 'Pixelated MS Sans Serif', Arial, sans-serif;
+  background: #008080;
   font-size: 11px;
 }
 
@@ -23,7 +18,7 @@ html, body {
   background: #c0c0c0;
 }
 
-/* ===== TITLE BAR ===== */
+/* ===== TITLE BAR (override 98.css to be non-draggable header) ===== */
 #main-title-bar {
   flex-shrink: 0;
 }
@@ -35,9 +30,9 @@ html, body {
   background: #c0c0c0;
   border-bottom: 1px solid #808080;
   padding: 1px 2px;
-  gap: 0;
   position: relative;
   z-index: 200;
+  gap: 0;
 }
 
 .menu-item {
@@ -45,12 +40,13 @@ html, body {
   cursor: default;
   position: relative;
   font-size: 11px;
+  user-select: none;
 }
 
 .menu-item:hover,
 .menu-item.open {
   background: #000080;
-  color: white;
+  color: #fff;
 }
 
 .menu-dropdown {
@@ -60,16 +56,16 @@ html, body {
   left: 0;
   background: #c0c0c0;
   border: 2px solid;
-  border-color: #ffffff #808080 #808080 #ffffff;
+  border-color: #fff #808080 #808080 #fff;
   box-shadow: 2px 2px 0 #000;
-  z-index: 300;
-  min-width: 160px;
+  z-index: 500;
+  min-width: 170px;
   padding: 2px;
+  flex-direction: column;
 }
 
 .menu-item.open .menu-dropdown {
   display: flex;
-  flex-direction: column;
 }
 
 .menu-dropdown button {
@@ -80,12 +76,13 @@ html, body {
   font-size: 11px;
   font-family: inherit;
   cursor: default;
+  color: #000;
   width: 100%;
 }
 
 .menu-dropdown button:hover {
   background: #000080;
-  color: white;
+  color: #fff;
 }
 
 .menu-separator {
@@ -105,12 +102,10 @@ html, body {
 
 /* ===== TOOLBOX ===== */
 #toolbox {
-  width: 80px;
+  width: 82px;
   flex-shrink: 0;
   margin: 4px;
-  display: flex;
-  flex-direction: column;
-  height: fit-content;
+  align-self: flex-start;
 }
 
 #toolbox-body {
@@ -127,105 +122,81 @@ html, body {
 }
 
 .tool-btn {
-  padding: 3px 2px;
   font-size: 9px;
-  min-width: 0;
+  height: 28px;
+  padding: 2px;
   width: 100%;
-  height: 32px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  cursor: default;
   font-family: inherit;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .tool-btn.active {
-  border-style: inset;
-  background: #c0c0c0;
+  /* Win98 pressed look */
+  border-style: inset !important;
 }
 
-/* Color picker input override */
 #color-picker {
   width: 100%;
-  height: 24px;
+  height: 22px;
   padding: 1px;
   cursor: pointer;
-  border: 2px inset #c0c0c0;
 }
 
-/* Brush size range */
 #brush-size {
   width: 100%;
-  margin: 0;
+  margin-top: 2px;
 }
 
-/* Recent colors */
 #recent-colors {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   margin-top: 2px;
+  min-height: 14px;
 }
 
-.recent-swatch {
-  width: 14px;
-  height: 14px;
-  border: 1px solid #000;
-  cursor: default;
-}
-
-.recent-swatch:hover {
-  outline: 1px solid #000080;
-}
-
-/* Palette */
-#palette {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  margin-top: 2px;
-}
-
+.recent-swatch,
 .palette-swatch {
   width: 14px;
   height: 14px;
   border: 1px solid #000;
   cursor: default;
+  flex-shrink: 0;
 }
 
+.recent-swatch:hover,
 .palette-swatch:hover {
-  outline: 2px solid #000080;
+  outline: 1px solid #000080;
+}
+
+#palette {
+  display: grid;
+  grid-template-columns: repeat(4, 14px);
+  gap: 1px;
+  margin-top: 2px;
 }
 
 /* ===== CANVAS AREA ===== */
 #canvas-area {
   flex: 1;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
-  margin: 4px 4px 4px 0;
-}
-
-#canvas-wrapper {
-  flex: 1;
-  overflow: hidden;
-  border: 2px inset #c0c0c0;
-  background: #808080;
   position: relative;
+  border: 2px inset #c0c0c0;
+  margin: 4px 4px 4px 0;
+  background: #808080;
   cursor: crosshair;
 }
 
-#canvas-container {
-  position: absolute;
-  transform-origin: 0 0;
-}
-
-#main-canvas {
+/* The view canvas fills the area exactly */
+#view-canvas {
   display: block;
+  position: absolute;
+  top: 0; left: 0;
+  /* width/height set by JS to match container */
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  cursor: inherit;
 }
 
 /* ===== STATUS BAR ===== */
@@ -235,9 +206,9 @@ html, body {
   height: 22px;
   background: #c0c0c0;
   border-top: 1px solid #fff;
-  padding: 0 4px;
   align-items: center;
-  gap: 0;
+  padding: 0 4px;
+  gap: 2px;
 }
 
 .status-segment {
@@ -246,57 +217,55 @@ html, body {
   height: 18px;
   line-height: 18px;
   font-size: 11px;
-  margin-right: 2px;
   white-space: nowrap;
 }
 
-/* ===== HELP DIALOG ===== */
-#help-dialog {
+/* ===== DIALOGS ===== */
+.dialog-window {
   position: fixed;
+  z-index: 600;
+}
+
+#help-dialog {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  z-index: 500;
-  width: 320px;
+  width: 300px;
 }
 
-#help-dialog table {
+.help-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
 }
 
-#help-dialog th,
-#help-dialog td {
+.help-table th, .help-table td {
   border: 1px solid #808080;
-  padding: 3px 8px;
+  padding: 2px 8px;
   text-align: left;
 }
 
-#help-dialog th {
+.help-table th {
   background: #000080;
-  color: white;
+  color: #fff;
 }
 
-/* ===== TOAST ===== */
-#toast {
-  position: fixed;
-  bottom: 40px;
-  right: 20px;
-  z-index: 600;
-  width: 240px;
+#toast-window {
+  bottom: 36px;
+  right: 16px;
+  width: 220px;
 }
 
-#toast-body {
+#toast-window p {
   font-size: 11px;
-  padding: 4px;
+  margin: 0;
 }
 
 /* ===== LOADING ===== */
-#loading {
+#loading-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.5);
+  background: rgba(0, 128, 128, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -304,21 +273,22 @@ html, body {
 }
 
 #loading-window {
-  width: 280px;
+  width: 300px;
 }
 
-#loading-bar-wrap {
-  width: 100%;
-  height: 18px;
-  border: 2px inset #c0c0c0;
-  background: white;
-  margin-top: 8px;
-  overflow: hidden;
+/* 98.css progress bar - use its class */
+.progress-bar {
+  height: 16px;
 }
 
-#loading-bar {
+.progress-bar > div {
   height: 100%;
-  width: 0%;
   background: #000080;
-  transition: width 0.1s linear;
+  width: 0%;
+  transition: width 0.15s linear;
+}
+
+#loading-label {
+  font-size: 11px;
+  margin: 0;
 }
