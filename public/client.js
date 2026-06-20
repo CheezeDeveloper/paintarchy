@@ -1,24 +1,24 @@
 // ===== SOCKET =====
-const socket = io();
+const socket = io({
+  transports: ['websocket'],
+});
 
-// ===== CANVAS SETUP =====
+// ===== CANVAS =====
 const canvas = document.getElementById('main-canvas');
 const ctx = canvas.getContext('2d');
-const container = document.getElementById('canvas-container');
-const wrapper = document.getElementById('canvas-wrapper');
+const canvasWrapper = document.getElementById('canvas-wrapper');
+const canvasContainer = document.getElementById('canvas-container');
 
-let CANVAS_W = 1000;
-let CANVAS_H = 1000;
+let CANVAS_W = 3000;
+let CANVAS_H = 3000;
 
 canvas.width = CANVAS_W;
 canvas.height = CANVAS_H;
-
-// Fill white background
 ctx.fillStyle = '#ffffff';
 ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
 // ===== STATE =====
-let currentColor = '#e63946';
+let currentColor = '#ff0000';
 let brushSize = 4;
 let currentTool = 'brush';
 let isDrawing = false;
@@ -26,133 +26,187 @@ let lastX = null;
 let lastY = null;
 let recentColors = [];
 
-// Pan/zoom state
+// Pan/zoom
 let scale = 1;
 let panX = 0;
 let panY = 0;
 let isPanning = false;
-let panStartX = 0;
-let panStartY = 0;
-let panOriginX = 0;
-let panOriginY = 0;
+let panStartX = 0, panStartY = 0, panOriginX = 0, panOriginY = 0;
 
-// Stroke buffer (batch pixel sends)
-let strokeBuffer = [];
+// Stroke tracking
+// Each local stroke gets a unique ID so remote clients can track continuity
+let currentStrokeId = null;
+let strokePointBuffer = [];   // buffer of {x,y} to send
 let strokeFlushTimer = null;
+let isFirstSegment = false;
 
-// ===== UI ELEMENTS =====
-const colorPicker = document.getElementById('color-picker');
-const brushSizeInput = document.getElementById('brush-size');
-const brushSizeLabel = document.getElementById('brush-size-label');
-const zoomLabel = document.getElementById('zoom-label');
-const coordsDisplay = document.getElementById('coords');
-const countNum = document.getElementById('count-num');
-const cursorPreview = document.getElementById('cursor-preview');
-const recentColorsEl = document.getElementById('recent-colors');
-const loading = document.getElementById('loading');
-const toast = document.getElementById('toast');
+// Remote stroke tracking: strokeId -> last {x, y}
+const remoteStrokes = new Map();
 
-// ===== HELPERS =====
-function showToast(msg, duration = 2500) {
-  toast.textContent = msg;
-  toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), duration);
+// ===== WIN98 PALETTE =====
+const PALETTE = [
+  '#000000','#808080','#800000','#808000',
+  '#008000','#008080','#000080','#800080',
+  '#c0c0c0','#ffffff','#ff0000','#ffff00',
+  '#00ff00','#00ffff','#0000ff','#ff00ff',
+  '#ff8040','#804000','#004000','#004040',
+  '#0040ff','#8000ff','#ff0080','#ff8080',
+];
+
+// ===== UI REFS =====
+const colorPicker     = document.getElementById('color-picker');
+const brushSizeInput  = document.getElementById('brush-size');
+const brushSizeLabel  = document.getElementById('brush-size-label');
+const statusCoords    = document.getElementById('status-coords');
+const statusTool      = document.getElementById('status-tool');
+const statusSize      = document.getElementById('status-size');
+const statusUsers     = document.getElementById('status-users');
+const statusConn      = document.getElementById('status-conn');
+const recentColorsEl  = document.getElementById('recent-colors');
+const paletteEl       = document.getElementById('palette');
+const loading         = document.getElementById('loading');
+const loadingBar      = document.getElementById('loading-bar');
+const toast           = document.getElementById('toast');
+const toastBody       = document.getElementById('toast-body');
+const helpDialog      = document.getElementById('help-dialog');
+
+// ===== INIT PALETTE =====
+PALETTE.forEach(color => {
+  const s = document.createElement('div');
+  s.className = 'palette-swatch';
+  s.style.background = color;
+  s.title = color;
+  s.addEventListener('click', () => {
+    currentColor = color;
+    colorPicker.value = color;
+  });
+  paletteEl.appendChild(s);
+});
+
+// ===== TOAST =====
+let toastTimer = null;
+function showToast(msg, duration = 3000) {
+  toastBody.textContent = msg;
+  toast.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
 }
 
+// ===== RECENT COLORS =====
 function addRecentColor(color) {
   if (recentColors[0] === color) return;
   recentColors = [color, ...recentColors.filter(c => c !== color)].slice(0, 8);
-  renderRecentColors();
+  renderRecent();
 }
 
-function renderRecentColors() {
+function renderRecent() {
   recentColorsEl.innerHTML = '';
   recentColors.forEach(color => {
-    const div = document.createElement('div');
-    div.className = 'recent-color';
-    div.style.background = color;
-    div.title = color;
-    div.addEventListener('click', () => {
+    const s = document.createElement('div');
+    s.className = 'recent-swatch';
+    s.style.background = color;
+    s.title = color;
+    s.addEventListener('click', () => {
       currentColor = color;
       colorPicker.value = color;
     });
-    recentColorsEl.appendChild(div);
+    recentColorsEl.appendChild(s);
   });
-}
-
-function hexToRgb(hex) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return [r, g, b];
-}
-
-function rgbToHex(r, g, b) {
-  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
 }
 
 // ===== TRANSFORM =====
 function applyTransform() {
-  container.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
-  zoomLabel.textContent = Math.round(scale * 100) + '%';
+  canvasContainer.style.transform =
+    `translate(${panX}px, ${panY}px) scale(${scale})`;
 }
 
-function centerCanvas() {
-  const ww = wrapper.clientWidth;
-  const wh = wrapper.clientHeight;
-  // Fit to screen
-  const scaleX = ww / CANVAS_W;
-  const scaleY = wh / CANVAS_H;
-  scale = Math.min(scaleX, scaleY) * 0.9;
-  panX = (ww - CANVAS_W * scale) / 2;
-  panY = (wh - CANVAS_H * scale) / 2;
+function fitCanvas() {
+  const ww = canvasWrapper.clientWidth;
+  const wh = canvasWrapper.clientHeight;
+  // Show a viewport-sized portion, 1:1 pixels initially
+  scale = 1;
+  // Start view at top-left of canvas
+  panX = 4;
+  panY = 4;
+  applyTransform();
+}
+
+function zoomAt(cx, cy, factor) {
+  const newScale = Math.min(Math.max(scale * factor, 0.1), 16);
+  const ratio = newScale / scale;
+  panX = cx - ratio * (cx - panX);
+  panY = cy - ratio * (cy - panY);
+  scale = newScale;
   applyTransform();
 }
 
 function getCanvasPos(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
+  const rect = canvasWrapper.getBoundingClientRect();
   return {
-    x: (clientX - rect.left) / scale,
-    y: (clientY - rect.top) / scale
+    x: (clientX - rect.left - panX) / scale,
+    y: (clientY - rect.top  - panY) / scale
   };
 }
 
-// ===== DRAWING =====
-function drawPixel(x, y, color, size) {
+// ===== DRAWING PRIMITIVES =====
+function drawDot(x, y, color, size) {
   const half = Math.floor(size / 2);
   ctx.fillStyle = color;
   ctx.fillRect(Math.floor(x) - half, Math.floor(y) - half, size, size);
 }
 
-function drawLine(x0, y0, x1, y1, color, size) {
-  // Bresenham-style interpolation
+// Draw line on local canvas, returns array of pixel positions covered
+function drawLineLocal(x0, y0, x1, y1, color, size) {
   const dist = Math.hypot(x1 - x0, y1 - y0);
   const steps = Math.max(Math.ceil(dist), 1);
-  const pixels = [];
+  const half = Math.floor(size / 2);
 
+  ctx.fillStyle = color;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const x = Math.floor(x0 + (x1 - x0) * t);
-    const y = Math.floor(y0 + (y1 - y0) * t);
-    drawPixel(x, y, color, size);
+    const x = Math.round(x0 + (x1 - x0) * t);
+    const y = Math.round(y0 + (y1 - y0) * t);
+    ctx.fillRect(x - half, y - half, size, size);
+  }
+}
 
-    // Collect all pixels in the square
-    const half = Math.floor(size / 2);
-    for (let dx = -half; dx < size - half; dx++) {
-      for (let dy = -half; dy < size - half; dy++) {
-        const px = x + dx;
-        const py = y + dy;
-        if (px >= 0 && px < CANVAS_W && py >= 0 && py < CANVAS_H) {
-          pixels.push({ x: px, y: py, color });
-        }
-      }
+// Replay a received segment on canvas
+// prevPoint: {x,y} or null if isFirst
+function replaySegment(points, color, size, prevPoint) {
+  if (points.length === 0) return;
+
+  ctx.fillStyle = color;
+  const half = Math.floor(size / 2);
+
+  function drawStep(x, y) {
+    ctx.fillRect(Math.floor(x) - half, Math.floor(y) - half, size, size);
+  }
+
+  function drawSegLine(x0, y0, x1, y1) {
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const steps = Math.max(Math.ceil(dist), 1);
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      drawStep(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t));
     }
   }
 
-  return pixels;
+  // Connect from previous point if not first segment
+  const allPoints = prevPoint && !isNaN(prevPoint.x)
+    ? [prevPoint, ...points]
+    : points;
+
+  if (allPoints.length === 1) {
+    drawStep(allPoints[0].x, allPoints[0].y);
+    return;
+  }
+
+  for (let i = 1; i < allPoints.length; i++) {
+    drawSegLine(allPoints[i-1].x, allPoints[i-1].y, allPoints[i].x, allPoints[i].y);
+  }
 }
 
-// Flood fill
+// ===== FLOOD FILL =====
 function floodFill(startX, startY, fillColor) {
   startX = Math.floor(startX);
   startY = Math.floor(startY);
@@ -160,177 +214,163 @@ function floodFill(startX, startY, fillColor) {
   const imageData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
   const data = imageData.data;
 
-  const idx = (y, x) => (y * CANVAS_W + x) * 4;
-  const startIdx = idx(startY, startX);
-  const sr = data[startIdx];
-  const sg = data[startIdx + 1];
-  const sb = data[startIdx + 2];
+  function idx(x, y) { return (y * CANVAS_W + x) * 4; }
+
+  const si = idx(startX, startY);
+  const sr = data[si], sg = data[si+1], sb = data[si+2];
 
   const [fr, fg, fb] = hexToRgb(fillColor);
-
   if (sr === fr && sg === fg && sb === fb) return;
 
   const stack = [[startX, startY]];
-  const visited = new Set();
-  const changedPixels = [];
+  const visited = new Uint8Array(CANVAS_W * CANVAS_H);
+  const changed = [];
 
   while (stack.length) {
     const [x, y] = stack.pop();
     if (x < 0 || x >= CANVAS_W || y < 0 || y >= CANVAS_H) continue;
-
-    const key = `${x},${y}`;
-    if (visited.has(key)) continue;
-    visited.add(key);
-
-    const i = idx(y, x);
-    if (data[i] !== sr || data[i + 1] !== sg || data[i + 2] !== sb) continue;
-
-    data[i] = fr;
-    data[i + 1] = fg;
-    data[i + 2] = fb;
-    data[i + 3] = 255;
-    changedPixels.push({ x, y, color: fillColor });
-
-    stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+    const vi = y * CANVAS_W + x;
+    if (visited[vi]) continue;
+    visited[vi] = 1;
+    const i = idx(x, y);
+    if (data[i] !== sr || data[i+1] !== sg || data[i+2] !== sb) continue;
+    data[i] = fr; data[i+1] = fg; data[i+2] = fb; data[i+3] = 255;
+    changed.push({ x, y });
+    stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
   }
 
   ctx.putImageData(imageData, 0, 0);
 
-  // Send in batches
-  for (let i = 0; i < changedPixels.length; i += 500) {
-    socket.emit('stroke:place', changedPixels.slice(i, i + 500));
+  // Emit in batches of 500
+  for (let i = 0; i < changed.length; i += 500) {
+    socket.emit('fill:place', { pixels: changed.slice(i, i+500), color: fillColor });
   }
 }
 
-// Eyedropper
+// ===== EYEDROPPER =====
 function pickColor(x, y) {
-  const pixel = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-  const color = rgbToHex(pixel[0], pixel[1], pixel[2]);
-  currentColor = color;
-  colorPicker.value = color;
-  addRecentColor(color);
-  showToast(`🎨 Picked ${color}`);
+  const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+  currentColor = rgbToHex(p[0], p[1], p[2]);
+  colorPicker.value = currentColor;
+  addRecentColor(currentColor);
   setTool('brush');
+  showToast('Color picked: ' + currentColor);
 }
 
-// ===== STROKE BUFFERING =====
-function flushStrokeBuffer() {
-  if (strokeBuffer.length === 0) return;
-  socket.emit('stroke:place', [...strokeBuffer]);
-  strokeBuffer = [];
+// ===== COLOR UTILS =====
+function hexToRgb(hex) {
+  return [
+    parseInt(hex.slice(1,3),16),
+    parseInt(hex.slice(3,5),16),
+    parseInt(hex.slice(5,7),16)
+  ];
+}
+function rgbToHex(r,g,b) {
+  return '#' + [r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
 }
 
-function bufferPixels(pixels) {
-  strokeBuffer.push(...pixels);
-  // Flush every 50ms or if buffer is large
+// ===== STROKE BUFFERING (LOCAL -> SERVER) =====
+// We send segments of points regularly so the server+others can replay smoothly.
+// Key fix: each segment carries isFirst and the strokeId so receivers
+// can stitch segments together without gaps.
+
+function flushStroke() {
+  if (strokePointBuffer.length === 0) return;
+  socket.emit('stroke:segment', {
+    strokeId: currentStrokeId,
+    points: [...strokePointBuffer],
+    color: currentTool === 'eraser' ? '#ffffff' : currentColor,
+    size: brushSize,
+    isFirst: isFirstSegment
+  });
+  isFirstSegment = false;
+  // Keep last point as overlap so next segment connects seamlessly
+  strokePointBuffer = [strokePointBuffer[strokePointBuffer.length - 1]];
+}
+
+function scheduleFlush() {
   if (!strokeFlushTimer) {
     strokeFlushTimer = setTimeout(() => {
-      flushStrokeBuffer();
+      flushStroke();
       strokeFlushTimer = null;
-    }, 50);
-  }
-  if (strokeBuffer.length >= 400) {
-    clearTimeout(strokeFlushTimer);
-    strokeFlushTimer = null;
-    flushStrokeBuffer();
+    }, 30); // 30ms batching - low latency
   }
 }
 
-// ===== EVENT HANDLERS =====
+// ===== TOOL SELECTION =====
 function setTool(tool) {
   currentTool = tool;
   document.querySelectorAll('.tool-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === tool);
   });
 
-  // Update cursor
-  if (tool === 'eyedropper') {
-    wrapper.style.cursor = 'crosshair';
-  } else if (tool === 'fill') {
-    wrapper.style.cursor = 'cell';
-  } else {
-    wrapper.style.cursor = 'none';
+  const toolNames = { brush:'Brush', eraser:'Eraser', fill:'Fill', eyedropper:'Color Picker' };
+  statusTool.textContent = 'Tool: ' + (toolNames[tool] || tool);
+
+  switch(tool) {
+    case 'eyedropper': canvasWrapper.style.cursor = 'crosshair'; break;
+    case 'fill':       canvasWrapper.style.cursor = 'cell'; break;
+    default:           canvasWrapper.style.cursor = 'crosshair';
   }
 }
 
 document.querySelectorAll('.tool-btn').forEach(btn => {
-  btn.addEventListener('click', () => setTool(btn.dataset.tool));
+  btn.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+    setTool(btn.dataset.tool);
+  });
 });
 
-colorPicker.addEventListener('input', (e) => {
-  currentColor = e.target.value;
-});
+// ===== COLOR / SIZE CONTROLS =====
+colorPicker.addEventListener('input', e => { currentColor = e.target.value; });
+colorPicker.addEventListener('change', e => { addRecentColor(e.target.value); });
 
-colorPicker.addEventListener('change', (e) => {
-  addRecentColor(e.target.value);
-});
-
-brushSizeInput.addEventListener('input', (e) => {
+brushSizeInput.addEventListener('input', e => {
   brushSize = parseInt(e.target.value);
-  brushSizeLabel.textContent = brushSize + 'px';
-  updateCursorPreview();
+  brushSizeLabel.textContent = brushSize;
+  statusSize.textContent = 'Size: ' + brushSize + 'px';
 });
-
-// Zoom buttons
-document.getElementById('zoom-in').addEventListener('click', () => {
-  const cx = wrapper.clientWidth / 2;
-  const cy = wrapper.clientHeight / 2;
-  zoomAt(cx, cy, 1.25);
-});
-
-document.getElementById('zoom-out').addEventListener('click', () => {
-  const cx = wrapper.clientWidth / 2;
-  const cy = wrapper.clientHeight / 2;
-  zoomAt(cx, cy, 0.8);
-});
-
-document.getElementById('zoom-reset').addEventListener('click', centerCanvas);
-
-function zoomAt(cx, cy, factor) {
-  const newScale = Math.min(Math.max(scale * factor, 0.1), 20);
-  const scaleChange = newScale / scale;
-  panX = cx - scaleChange * (cx - panX);
-  panY = cy - scaleChange * (cy - panY);
-  scale = newScale;
-  applyTransform();
-}
-
-// Save PNG
-document.getElementById('save-btn').addEventListener('click', () => {
-  const link = document.createElement('a');
-  link.download = 'paintarchy.png';
-  link.href = canvas.toDataURL();
-  link.click();
-  showToast('💾 Canvas saved!');
-});
-
-// ===== CURSOR PREVIEW =====
-function updateCursorPreview(clientX, clientY) {
-  const size = brushSize * scale;
-  cursorPreview.style.width = size + 'px';
-  cursorPreview.style.height = size + 'px';
-  if (clientX !== undefined) {
-    cursorPreview.style.left = clientX + 'px';
-    cursorPreview.style.top = clientY + 'px';
-  }
-}
 
 // ===== MOUSE EVENTS =====
-wrapper.addEventListener('mousemove', (e) => {
-  const { x, y } = getCanvasPos(e.clientX, e.clientY);
-  coordsDisplay.textContent = `X: ${Math.floor(x)}, Y: ${Math.floor(y)}`;
+canvasWrapper.addEventListener('mousedown', (e) => {
+  e.preventDefault();
 
-  // Cursor preview
-  if (currentTool === 'brush' || currentTool === 'eraser') {
-    cursorPreview.style.display = 'block';
-    updateCursorPreview(e.clientX, e.clientY);
-    cursorPreview.style.borderColor =
-      currentTool === 'eraser' ? '#999' : currentColor;
-  } else {
-    cursorPreview.style.display = 'none';
+  // Middle or right click -> pan
+  if (e.button === 1 || e.button === 2) {
+    isPanning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panOriginX = panX;
+    panOriginY = panY;
+    canvasWrapper.style.cursor = 'move';
+    return;
   }
 
-  // Panning
+  if (e.button !== 0) return;
+
+  const { x, y } = getCanvasPos(e.clientX, e.clientY);
+  if (x < 0 || x >= CANVAS_W || y < 0 || y >= CANVAS_H) return;
+
+  if (currentTool === 'eyedropper') { pickColor(x, y); return; }
+  if (currentTool === 'fill')       { floodFill(x, y, currentColor); return; }
+
+  // Start stroke
+  isDrawing = true;
+  lastX = x;
+  lastY = y;
+  currentStrokeId = Date.now() + '_' + Math.random().toString(36).slice(2);
+  isFirstSegment = true;
+  strokePointBuffer = [{ x: Math.floor(x), y: Math.floor(y) }];
+
+  const color = currentTool === 'eraser' ? '#ffffff' : currentColor;
+  drawDot(x, y, color, brushSize);
+  scheduleFlush();
+});
+
+canvasWrapper.addEventListener('mousemove', (e) => {
+  const { x, y } = getCanvasPos(e.clientX, e.clientY);
+  statusCoords.textContent = `X: ${Math.floor(x)}, Y: ${Math.floor(y)}`;
+
   if (isPanning) {
     panX = panOriginX + (e.clientX - panStartX);
     panY = panOriginY + (e.clientY - panStartY);
@@ -338,213 +378,202 @@ wrapper.addEventListener('mousemove', (e) => {
     return;
   }
 
-  // Drawing
-  if (isDrawing && (currentTool === 'brush' || currentTool === 'eraser')) {
-    const color = currentTool === 'eraser' ? '#ffffff' : currentColor;
-    if (lastX !== null) {
-      const pixels = drawLine(lastX, lastY, x, y, color, brushSize);
-      bufferPixels(pixels);
-    } else {
-      const pixels = [];
-      drawPixel(x, y, color, brushSize);
-      const half = Math.floor(brushSize / 2);
-      for (let dx = -half; dx < brushSize - half; dx++) {
-        for (let dy = -half; dy < brushSize - half; dy++) {
-          const px = Math.floor(x) + dx;
-          const py = Math.floor(y) + dy;
-          if (px >= 0 && px < CANVAS_W && py >= 0 && py < CANVAS_H) {
-            pixels.push({ x: px, y: py, color });
-          }
-        }
-      }
-      bufferPixels(pixels);
-    }
-    lastX = x;
-    lastY = y;
-  }
-});
-
-wrapper.addEventListener('mousedown', (e) => {
-  if (e.button === 1 || e.button === 2) {
-    // Middle or right click = pan
-    isPanning = true;
-    panStartX = e.clientX;
-    panStartY = e.clientY;
-    panOriginX = panX;
-    panOriginY = panY;
-    wrapper.style.cursor = 'grabbing';
-    return;
-  }
-
-  if (e.button !== 0) return;
-
-  const { x, y } = getCanvasPos(e.clientX, e.clientY);
-
-  if (currentTool === 'eyedropper') {
-    pickColor(x, y);
-    return;
-  }
-
-  if (currentTool === 'fill') {
-    floodFill(x, y, currentColor);
-    return;
-  }
-
-  isDrawing = true;
-  lastX = x;
-  lastY = y;
+  if (!isDrawing) return;
+  if (currentTool !== 'brush' && currentTool !== 'eraser') return;
 
   const color = currentTool === 'eraser' ? '#ffffff' : currentColor;
-  drawPixel(x, y, color, brushSize);
+  const cx = Math.floor(x), cy = Math.floor(y);
+  const lx = Math.floor(lastX), ly = Math.floor(lastY);
 
-  const pixels = [];
-  const half = Math.floor(brushSize / 2);
-  for (let dx = -half; dx < brushSize - half; dx++) {
-    for (let dy = -half; dy < brushSize - half; dy++) {
-      const px = Math.floor(x) + dx;
-      const py = Math.floor(y) + dy;
-      if (px >= 0 && px < CANVAS_W && py >= 0 && py < CANVAS_H) {
-        pixels.push({ x: px, y: py, color });
-      }
-    }
-  }
-  bufferPixels(pixels);
+  // Draw locally
+  drawLineLocal(lx, ly, cx, cy, color, brushSize);
+
+  // Buffer for network
+  strokePointBuffer.push({ x: cx, y: cy });
+  scheduleFlush();
+
+  lastX = x;
+  lastY = y;
 });
 
 window.addEventListener('mouseup', (e) => {
   if (isPanning) {
     isPanning = false;
-    setTool(currentTool); // restore cursor
+    setTool(currentTool);
     return;
   }
+  if (!isDrawing) return;
   isDrawing = false;
+
+  // Flush remaining buffer
+  clearTimeout(strokeFlushTimer);
+  strokeFlushTimer = null;
+  flushStroke();
+  strokePointBuffer = [];
+  currentStrokeId = null;
+
+  addRecentColor(currentColor);
   lastX = null;
   lastY = null;
-  flushStrokeBuffer();
-  addRecentColor(currentColor);
 });
 
 // Scroll to zoom
-wrapper.addEventListener('wheel', (e) => {
+canvasWrapper.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const factor = e.deltaY < 0 ? 1.1 : 0.9;
-  zoomAt(e.clientX, e.clientY, factor);
+  const factor = e.deltaY < 0 ? 1.15 : (1/1.15);
+  zoomAt(e.clientX - canvasWrapper.getBoundingClientRect().left,
+         e.clientY - canvasWrapper.getBoundingClientRect().top, factor);
 }, { passive: false });
 
-// Prevent context menu on canvas
-wrapper.addEventListener('contextmenu', e => e.preventDefault());
+canvasWrapper.addEventListener('contextmenu', e => e.preventDefault());
 
-// Touch support (basic)
-let lastTouchDist = null;
-
-wrapper.addEventListener('touchstart', (e) => {
-  if (e.touches.length === 2) {
-    lastTouchDist = Math.hypot(
-      e.touches[0].clientX - e.touches[1].clientX,
-      e.touches[0].clientY - e.touches[1].clientY
-    );
-    return;
-  }
-  const touch = e.touches[0];
-  const mouseEvent = new MouseEvent('mousedown', {
-    clientX: touch.clientX, clientY: touch.clientY, button: 0
-  });
-  wrapper.dispatchEvent(mouseEvent);
-}, { passive: true });
-
-wrapper.addEventListener('touchmove', (e) => {
-  if (e.touches.length === 2) {
-    const dist = Math.hypot(
-      e.touches[0].clientX - e.touches[1].clientX,
-      e.touches[0].clientY - e.touches[1].clientY
-    );
-    if (lastTouchDist) {
-      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      zoomAt(midX, midY, dist / lastTouchDist);
-    }
-    lastTouchDist = dist;
-    return;
-  }
-  e.preventDefault();
-  const touch = e.touches[0];
-  const mouseEvent = new MouseEvent('mousemove', {
-    clientX: touch.clientX, clientY: touch.clientY
-  });
-  wrapper.dispatchEvent(mouseEvent);
-}, { passive: false });
-
-wrapper.addEventListener('touchend', () => {
-  lastTouchDist = null;
-  window.dispatchEvent(new MouseEvent('mouseup'));
-});
-
-// Keyboard shortcuts
+// ===== KEYBOARD =====
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
-  switch (e.key.toLowerCase()) {
+  switch(e.key.toLowerCase()) {
     case 'b': setTool('brush'); break;
-    case 'f': setTool('fill'); break;
     case 'e': setTool('eraser'); break;
+    case 'f': setTool('fill'); break;
     case 'i': setTool('eyedropper'); break;
-    case '[': brushSize = Math.max(1, brushSize - 2);
+    case '[':
+      brushSize = Math.max(1, brushSize - 1);
       brushSizeInput.value = brushSize;
-      brushSizeLabel.textContent = brushSize + 'px';
-      updateCursorPreview();
+      brushSizeLabel.textContent = brushSize;
+      statusSize.textContent = 'Size: ' + brushSize + 'px';
       break;
-    case ']': brushSize = Math.min(50, brushSize + 2);
+    case ']':
+      brushSize = Math.min(50, brushSize + 1);
       brushSizeInput.value = brushSize;
-      brushSizeLabel.textContent = brushSize + 'px';
-      updateCursorPreview();
+      brushSizeLabel.textContent = brushSize;
+      statusSize.textContent = 'Size: ' + brushSize + 'px';
       break;
   }
+});
+
+// ===== MENU =====
+document.querySelectorAll('.menu-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasOpen = item.classList.contains('open');
+    document.querySelectorAll('.menu-item').forEach(i => i.classList.remove('open'));
+    if (!wasOpen) item.classList.add('open');
+  });
+});
+window.addEventListener('click', () => {
+  document.querySelectorAll('.menu-item').forEach(i => i.classList.remove('open'));
+});
+
+document.getElementById('save-btn').addEventListener('click', () => {
+  const link = document.createElement('a');
+  link.download = 'paintarchy.png';
+  link.href = canvas.toDataURL();
+  link.click();
+  showToast('Canvas saved as PNG.');
+});
+
+document.getElementById('zoom-in-btn').addEventListener('click', () => {
+  zoomAt(canvasWrapper.clientWidth/2, canvasWrapper.clientHeight/2, 1.5);
+});
+document.getElementById('zoom-out-btn').addEventListener('click', () => {
+  zoomAt(canvasWrapper.clientWidth/2, canvasWrapper.clientHeight/2, 1/1.5);
+});
+document.getElementById('zoom-reset-btn').addEventListener('click', fitCanvas);
+document.getElementById('zoom-fit-btn').addEventListener('click', () => {
+  const ww = canvasWrapper.clientWidth;
+  const wh = canvasWrapper.clientHeight;
+  const s = Math.min(ww / CANVAS_W, wh / CANVAS_H);
+  scale = s;
+  panX = (ww - CANVAS_W * s) / 2;
+  panY = (wh - CANVAS_H * s) / 2;
+  applyTransform();
+});
+
+document.getElementById('help-btn').addEventListener('click', () => {
+  helpDialog.style.display = 'block';
+});
+document.getElementById('help-close').addEventListener('click', () => {
+  helpDialog.style.display = 'none';
+});
+document.getElementById('help-ok').addEventListener('click', () => {
+  helpDialog.style.display = 'none';
 });
 
 // ===== SOCKET EVENTS =====
+socket.on('connect', () => {
+  statusConn.textContent = 'Connected';
+});
+
+socket.on('disconnect', () => {
+  statusConn.textContent = 'Disconnected';
+  showToast('Disconnected from server. Reconnecting...');
+});
+
 socket.on('canvas:init', ({ width, height, pixels }) => {
   CANVAS_W = width;
   CANVAS_H = height;
   canvas.width = CANVAS_W;
   canvas.height = CANVAS_H;
-
-  // White background
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-  // Draw existing pixels
-  pixels.forEach(({ x, y, color }) => {
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y, 1, 1);
-  });
+  // Animate loading bar while drawing pixels
+  const total = pixels.length;
+  let i = 0;
+  const BATCH = 5000;
 
-  // Hide loading
-  loading.style.opacity = '0';
-  setTimeout(() => loading.style.display = 'none', 500);
+  function drawBatch() {
+    const end = Math.min(i + BATCH, total);
+    for (; i < end; i++) {
+      const { x, y, color } = pixels[i];
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, 1, 1);
+    }
+    loadingBar.style.width = (total > 0 ? (i / total * 100) : 100) + '%';
+    if (i < total) {
+      requestAnimationFrame(drawBatch);
+    } else {
+      loading.style.display = 'none';
+      fitCanvas();
+      showToast('Welcome to Paintarchy. Total anarchy awaits.');
+    }
+  }
 
-  centerCanvas();
-  showToast('🎨 Welcome to Paintarchy! Total anarchy awaits...');
+  if (total === 0) {
+    loading.style.display = 'none';
+    fitCanvas();
+    showToast('Welcome to Paintarchy. Total anarchy awaits.');
+  } else {
+    drawBatch();
+  }
 });
 
-socket.on('pixel:update', ({ x, y, color }) => {
+// Remote stroke segments - stitch together using strokeId
+socket.on('stroke:segment', ({ strokeId, points, color, size, isFirst }) => {
+  // Get the last known point for this stroke
+  let prevPoint = null;
+  if (!isFirst && remoteStrokes.has(strokeId)) {
+    prevPoint = remoteStrokes.get(strokeId);
+  }
+
+  replaySegment(points, color, size, prevPoint);
+
+  // Store last point of this segment for next segment connection
+  if (points.length > 0) {
+    remoteStrokes.set(strokeId, points[points.length - 1]);
+  }
+
+  // Cleanup old strokes (keep map lean)
+  if (remoteStrokes.size > 200) {
+    const firstKey = remoteStrokes.keys().next().value;
+    remoteStrokes.delete(firstKey);
+  }
+});
+
+socket.on('fill:place', ({ pixels, color }) => {
   ctx.fillStyle = color;
-  ctx.fillRect(x, y, 1, 1);
-});
-
-socket.on('stroke:update', (pixels) => {
-  pixels.forEach(({ x, y, color }) => {
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y, 1, 1);
-  });
+  pixels.forEach(({ x, y }) => ctx.fillRect(x, y, 1, 1));
 });
 
 socket.on('users:count', (count) => {
-  countNum.textContent = count;
-});
-
-socket.on('connect', () => {
-  console.log('Connected to Paintarchy!');
-});
-
-socket.on('disconnect', () => {
-  showToast('⚠️ Disconnected! Reconnecting...', 5000);
+  statusUsers.textContent = 'Users: ' + count;
 });
