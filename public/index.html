@@ -9,172 +9,160 @@
 </head>
 <body>
 
-  <div id="app">
+<div id="app">
 
-    <!-- Title bar acting as header -->
-    <div class="title-bar" id="main-title-bar">
-      <div class="title-bar-text">Paintarchy - Anarchy Canvas [3000x3000]</div>
-      <div class="title-bar-controls">
-        <button aria-label="Minimize"></button>
-        <button aria-label="Maximize"></button>
-        <button aria-label="Close"></button>
+  <!-- Title bar -->
+  <div class="title-bar" id="main-title-bar">
+    <div class="title-bar-text">Paintarchy - Anarchy Canvas [3000x3000]</div>
+    <div class="title-bar-controls">
+      <button aria-label="Minimize"></button>
+      <button aria-label="Maximize"></button>
+      <button aria-label="Close"></button>
+    </div>
+  </div>
+
+  <!-- Menu bar -->
+  <div id="menu-bar">
+    <div class="menu-item" id="menu-file">
+      File
+      <div class="menu-dropdown">
+        <button id="save-btn">Save as PNG...</button>
+        <div class="menu-separator"></div>
+        <button id="clear-local-btn">Clear View</button>
+      </div>
+    </div>
+    <div class="menu-item" id="menu-view">
+      View
+      <div class="menu-dropdown">
+        <button id="zoom-in-btn">Zoom In</button>
+        <button id="zoom-out-btn">Zoom Out</button>
+        <button id="zoom-reset-btn">Actual Size (1:1)</button>
+      </div>
+    </div>
+    <div class="menu-item" id="menu-help">
+      Help
+      <div class="menu-dropdown">
+        <button id="help-btn">Keyboard Shortcuts...</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main area -->
+  <div id="main-layout">
+
+    <!-- Toolbox -->
+    <div class="window" id="toolbox">
+      <div class="title-bar">
+        <div class="title-bar-text">Tools</div>
+      </div>
+      <div class="window-body" id="toolbox-body">
+
+        <div id="tool-grid">
+          <button class="tool-btn active" data-tool="brush">Brush</button>
+          <button class="tool-btn" data-tool="eraser">Eraser</button>
+          <button class="tool-btn" data-tool="fill">Fill</button>
+          <button class="tool-btn" data-tool="eyedropper">Picker</button>
+        </div>
+
+        <hr />
+
+        <div class="field-row-stacked">
+          <label for="color-picker">Foreground</label>
+          <input type="color" id="color-picker" value="#ff0000" />
+        </div>
+
+        <div class="field-row-stacked" style="margin-top:6px;">
+          <label for="brush-size">Size: <strong id="brush-size-label">4</strong>px</label>
+          <input type="range" id="brush-size" min="1" max="50" value="4" />
+        </div>
+
+        <hr />
+
+        <label>Recent Colors</label>
+        <div id="recent-colors"></div>
+
+        <hr />
+
+        <label>Palette</label>
+        <div id="palette"></div>
+
       </div>
     </div>
 
-    <!-- Menu bar -->
-    <div class="menu-bar" id="menu-bar">
-      <div class="menu-item" id="menu-file">
-        File
-        <div class="menu-dropdown" id="dropdown-file">
-          <button id="save-btn">Save as PNG...</button>
-          <div class="menu-separator"></div>
-          <button id="clear-btn">New Canvas</button>
-        </div>
-      </div>
-      <div class="menu-item" id="menu-view">
-        View
-        <div class="menu-dropdown" id="dropdown-view">
-          <button id="zoom-in-btn">Zoom In</button>
-          <button id="zoom-out-btn">Zoom Out</button>
-          <button id="zoom-reset-btn">Actual Size</button>
-          <div class="menu-separator"></div>
-          <button id="zoom-fit-btn">Fit to Window</button>
-        </div>
-      </div>
-      <div class="menu-item" id="menu-help">
-        Help
-        <div class="menu-dropdown" id="dropdown-help">
-          <button id="help-btn">Keyboard Shortcuts</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Main layout -->
-    <div id="main-layout">
-
-      <!-- Toolbox panel -->
-      <div class="window" id="toolbox">
-        <div class="title-bar">
-          <div class="title-bar-text">Tools</div>
-        </div>
-        <div class="window-body" id="toolbox-body">
-
-          <!-- Tool grid -->
-          <div id="tool-grid">
-            <button class="tool-btn active" data-tool="brush" title="Brush (B)">
-              <img src="icons/brush.png" alt="Brush" onerror="this.style.display='none';this.parentElement.appendChild(document.createTextNode('Brush'))" />
-              Brush
-            </button>
-            <button class="tool-btn" data-tool="eraser" title="Eraser (E)">
-              Eraser
-            </button>
-            <button class="tool-btn" data-tool="fill" title="Fill (F)">
-              Fill
-            </button>
-            <button class="tool-btn" data-tool="eyedropper" title="Pick Color (I)">
-              Picker
-            </button>
-          </div>
-
-          <hr />
-
-          <!-- Color picker -->
-          <div class="field-row-stacked" style="margin-bottom: 6px;">
-            <label for="color-picker">Color</label>
-            <input type="color" id="color-picker" value="#ff0000" />
-          </div>
-
-          <!-- Brush size -->
-          <div class="field-row-stacked">
-            <label for="brush-size">Size: <span id="brush-size-label">4</span>px</label>
-            <input type="range" id="brush-size" min="1" max="50" value="4" />
-          </div>
-
-          <hr />
-
-          <!-- Recent colors -->
-          <label>Recent</label>
-          <div id="recent-colors"></div>
-
-          <hr />
-
-          <!-- Palette -->
-          <label>Palette</label>
-          <div id="palette"></div>
-
-        </div>
-      </div>
-
-      <!-- Canvas area -->
-      <div id="canvas-area">
-        <div id="canvas-wrapper">
-          <div id="canvas-container">
-            <canvas id="main-canvas"></canvas>
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- Status bar -->
-    <div id="status-bar">
-      <div class="status-segment" id="status-coords">X: 0, Y: 0</div>
-      <div class="status-segment" id="status-tool">Tool: Brush</div>
-      <div class="status-segment" id="status-size">Size: 4px</div>
-      <div class="status-segment" id="status-users">Users: 1</div>
-      <div class="status-segment" id="status-conn">Connecting...</div>
+    <!-- Canvas viewport -->
+    <div id="canvas-area">
+      <!-- The visible canvas - sized to fill the available space -->
+      <canvas id="view-canvas"></canvas>
     </div>
 
   </div>
 
-  <!-- Help dialog -->
-  <div class="window" id="help-dialog" style="display:none;">
-    <div class="title-bar">
-      <div class="title-bar-text">Keyboard Shortcuts</div>
-      <div class="title-bar-controls">
-        <button aria-label="Close" id="help-close"></button>
-      </div>
+  <!-- Status bar -->
+  <div id="status-bar">
+    <div class="status-segment" id="status-coords">X: 0, Y: 0</div>
+    <div class="status-segment" id="status-tool">Tool: Brush</div>
+    <div class="status-segment" id="status-size">Size: 4px</div>
+    <div class="status-segment" id="status-users">Users: 1</div>
+    <div class="status-segment" id="status-conn">Connecting...</div>
+  </div>
+
+</div>
+
+<!-- Help dialog -->
+<div class="window dialog-window" id="help-dialog" style="display:none;">
+  <div class="title-bar">
+    <div class="title-bar-text">Keyboard Shortcuts</div>
+    <div class="title-bar-controls">
+      <button aria-label="Close" id="help-close"></button>
     </div>
-    <div class="window-body">
-      <table>
-        <tr><th>Key</th><th>Action</th></tr>
+  </div>
+  <div class="window-body">
+    <table class="help-table">
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
         <tr><td>B</td><td>Brush tool</td></tr>
         <tr><td>E</td><td>Eraser tool</td></tr>
         <tr><td>F</td><td>Fill tool</td></tr>
         <tr><td>I</td><td>Color picker</td></tr>
         <tr><td>[</td><td>Decrease brush size</td></tr>
         <tr><td>]</td><td>Increase brush size</td></tr>
-        <tr><td>Middle drag</td><td>Pan canvas</td></tr>
-        <tr><td>Scroll</td><td>Zoom in/out</td></tr>
-      </table>
-      <div style="text-align:right; margin-top: 10px;">
-        <button id="help-ok">OK</button>
+        <tr><td>Right-click drag</td><td>Pan canvas</td></tr>
+        <tr><td>Middle-click drag</td><td>Pan canvas</td></tr>
+        <tr><td>Scroll wheel</td><td>Zoom in / out</td></tr>
+      </tbody>
+    </table>
+    <div style="text-align:right;margin-top:8px;">
+      <button id="help-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast notification -->
+<div class="window dialog-window" id="toast-window" style="display:none;pointer-events:none;">
+  <div class="title-bar">
+    <div class="title-bar-text">Paintarchy</div>
+  </div>
+  <div class="window-body">
+    <p id="toast-text"></p>
+  </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="window" id="loading-window">
+    <div class="title-bar">
+      <div class="title-bar-text">Paintarchy - Loading</div>
+    </div>
+    <div class="window-body">
+      <p id="loading-label">Connecting to server...</p>
+      <div class="progress-bar" style="margin-top:8px;">
+        <div id="loading-bar"></div>
       </div>
     </div>
   </div>
+</div>
 
-  <!-- Toast -->
-  <div id="toast" class="window" style="display:none;">
-    <div class="title-bar"><div class="title-bar-text">Paintarchy</div></div>
-    <div class="window-body" id="toast-body"></div>
-  </div>
-
-  <!-- Loading -->
-  <div id="loading">
-    <div class="window" id="loading-window">
-      <div class="title-bar">
-        <div class="title-bar-text">Paintarchy</div>
-      </div>
-      <div class="window-body">
-        <p>Loading canvas data, please wait...</p>
-        <div id="loading-bar-wrap">
-          <div id="loading-bar"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="client.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="client.js"></script>
 </body>
 </html>
