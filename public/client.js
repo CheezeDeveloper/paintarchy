@@ -1,47 +1,53 @@
+// ===================================================================
+// PAINTARCHY - CLIENT
+// Uses an OFFSCREEN canvas (full 3000x3000) as the source of truth.
+// The VIEW canvas is only as big as the visible area on screen.
+// We blit the relevant portion of the offscreen canvas to the view.
+// This means the DOM never holds a 3000x3000 element - only the
+// offscreen (in memory) ImageData does.
+// ===================================================================
+
 // ===== SOCKET =====
-const socket = io({
-  transports: ['websocket'],
-});
+const socket = io({ transports: ['websocket', 'polling'] });
 
-// ===== CANVAS =====
-const canvas = document.getElementById('main-canvas');
-const ctx = canvas.getContext('2d');
-const canvasWrapper = document.getElementById('canvas-wrapper');
-const canvasContainer = document.getElementById('canvas-container');
-
+// ===== OFFSCREEN CANVAS (full virtual canvas) =====
 let CANVAS_W = 3000;
 let CANVAS_H = 3000;
+const offscreen = document.createElement('canvas');
+const offCtx = offscreen.getContext('2d');
 
-canvas.width = CANVAS_W;
-canvas.height = CANVAS_H;
-ctx.fillStyle = '#ffffff';
-ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+// ===== VIEW CANVAS (only what fits on screen) =====
+const viewCanvas = document.getElementById('view-canvas');
+const viewCtx = viewCanvas.getContext('2d');
 
-// ===== STATE =====
+// ===== VIEWPORT STATE =====
+// panX/panY = top-left corner of the view in offscreen coordinates
+let panX = 0;
+let panY = 0;
+let scale = 1; // pixels per offscreen pixel
+
+// ===== TOOL STATE =====
 let currentColor = '#ff0000';
 let brushSize = 4;
 let currentTool = 'brush';
 let isDrawing = false;
-let lastX = null;
+let lastX = null; // in offscreen coords
 let lastY = null;
 let recentColors = [];
 
-// Pan/zoom
-let scale = 1;
-let panX = 0;
-let panY = 0;
-let isPanning = false;
-let panStartX = 0, panStartY = 0, panOriginX = 0, panOriginY = 0;
-
-// Stroke tracking
-// Each local stroke gets a unique ID so remote clients can track continuity
+// Stroke sending
 let currentStrokeId = null;
-let strokePointBuffer = [];   // buffer of {x,y} to send
+let strokeBuffer = [];
 let strokeFlushTimer = null;
-let isFirstSegment = false;
+let isFirstSegment = true;
 
-// Remote stroke tracking: strokeId -> last {x, y}
+// Remote stroke last-point tracking: strokeId -> {x, y}
 const remoteStrokes = new Map();
+
+// Panning
+let isPanning = false;
+let panStartMouseX = 0, panStartMouseY = 0;
+let panStartX = 0, panStartY = 0;
 
 // ===== WIN98 PALETTE =====
 const PALETTE = [
@@ -50,172 +56,153 @@ const PALETTE = [
   '#c0c0c0','#ffffff','#ff0000','#ffff00',
   '#00ff00','#00ffff','#0000ff','#ff00ff',
   '#ff8040','#804000','#004000','#004040',
-  '#0040ff','#8000ff','#ff0080','#ff8080',
+  '#0040ff','#8000ff','#ff0080','#808040',
 ];
 
 // ===== UI REFS =====
-const colorPicker     = document.getElementById('color-picker');
-const brushSizeInput  = document.getElementById('brush-size');
-const brushSizeLabel  = document.getElementById('brush-size-label');
-const statusCoords    = document.getElementById('status-coords');
-const statusTool      = document.getElementById('status-tool');
-const statusSize      = document.getElementById('status-size');
-const statusUsers     = document.getElementById('status-users');
-const statusConn      = document.getElementById('status-conn');
-const recentColorsEl  = document.getElementById('recent-colors');
-const paletteEl       = document.getElementById('palette');
-const loading         = document.getElementById('loading');
-const loadingBar      = document.getElementById('loading-bar');
-const toast           = document.getElementById('toast');
-const toastBody       = document.getElementById('toast-body');
-const helpDialog      = document.getElementById('help-dialog');
+const colorPicker       = document.getElementById('color-picker');
+const brushSizeInput    = document.getElementById('brush-size');
+const brushSizeLabel    = document.getElementById('brush-size-label');
+const statusCoords      = document.getElementById('status-coords');
+const statusTool        = document.getElementById('status-tool');
+const statusSize        = document.getElementById('status-size');
+const statusUsers       = document.getElementById('status-users');
+const statusConn        = document.getElementById('status-conn');
+const recentColorsEl    = document.getElementById('recent-colors');
+const paletteEl         = document.getElementById('palette');
+const loadingOverlay    = document.getElementById('loading-overlay');
+const loadingBar        = document.getElementById('loading-bar');
+const loadingLabel      = document.getElementById('loading-label');
+const toastWindow       = document.getElementById('toast-window');
+const toastText         = document.getElementById('toast-text');
+const helpDialog        = document.getElementById('help-dialog');
+const canvasArea        = document.getElementById('canvas-area');
 
-// ===== INIT PALETTE =====
-PALETTE.forEach(color => {
-  const s = document.createElement('div');
-  s.className = 'palette-swatch';
-  s.style.background = color;
-  s.title = color;
-  s.addEventListener('click', () => {
-    currentColor = color;
-    colorPicker.value = color;
-  });
-  paletteEl.appendChild(s);
-});
+// ===================================================================
+// INIT
+// ===================================================================
 
-// ===== TOAST =====
-let toastTimer = null;
-function showToast(msg, duration = 3000) {
-  toastBody.textContent = msg;
-  toast.style.display = 'block';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
+function initOffscreen() {
+  offscreen.width = CANVAS_W;
+  offscreen.height = CANVAS_H;
+  offCtx.fillStyle = '#ffffff';
+  offCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 }
 
-// ===== RECENT COLORS =====
-function addRecentColor(color) {
-  if (recentColors[0] === color) return;
-  recentColors = [color, ...recentColors.filter(c => c !== color)].slice(0, 8);
-  renderRecent();
+function resizeViewCanvas() {
+  viewCanvas.width  = canvasArea.clientWidth;
+  viewCanvas.height = canvasArea.clientHeight;
+  renderView();
 }
 
-function renderRecent() {
-  recentColorsEl.innerHTML = '';
-  recentColors.forEach(color => {
-    const s = document.createElement('div');
-    s.className = 'recent-swatch';
-    s.style.background = color;
-    s.title = color;
-    s.addEventListener('click', () => {
-      currentColor = color;
-      colorPicker.value = color;
-    });
-    recentColorsEl.appendChild(s);
-  });
+// ===================================================================
+// RENDER - blit offscreen -> view
+// ===================================================================
+function renderView() {
+  const vw = viewCanvas.width;
+  const vh = viewCanvas.height;
+
+  viewCtx.save();
+  viewCtx.fillStyle = '#808080';
+  viewCtx.fillRect(0, 0, vw, vh);
+
+  // Source rect in offscreen coords
+  const srcW = vw / scale;
+  const srcH = vh / scale;
+
+  // Clamp pan so we don't go out of bounds
+  panX = Math.max(0, Math.min(panX, CANVAS_W - srcW));
+  panY = Math.max(0, Math.min(panY, CANVAS_H - srcH));
+
+  // Draw the offscreen portion into view
+  viewCtx.drawImage(
+    offscreen,
+    panX, panY,         // source x, y
+    srcW, srcH,         // source w, h
+    0, 0,               // dest x, y
+    vw, vh              // dest w, h
+  );
+
+  viewCtx.restore();
 }
 
-// ===== TRANSFORM =====
-function applyTransform() {
-  canvasContainer.style.transform =
-    `translate(${panX}px, ${panY}px) scale(${scale})`;
-}
+// ===================================================================
+// COORDINATE CONVERSION
+// ===================================================================
 
-function fitCanvas() {
-  const ww = canvasWrapper.clientWidth;
-  const wh = canvasWrapper.clientHeight;
-  // Show a viewport-sized portion, 1:1 pixels initially
-  scale = 1;
-  // Start view at top-left of canvas
-  panX = 4;
-  panY = 4;
-  applyTransform();
-}
-
-function zoomAt(cx, cy, factor) {
-  const newScale = Math.min(Math.max(scale * factor, 0.1), 16);
-  const ratio = newScale / scale;
-  panX = cx - ratio * (cx - panX);
-  panY = cy - ratio * (cy - panY);
-  scale = newScale;
-  applyTransform();
-}
-
-function getCanvasPos(clientX, clientY) {
-  const rect = canvasWrapper.getBoundingClientRect();
+// View (screen) coords -> offscreen canvas coords
+function viewToOff(vx, vy) {
   return {
-    x: (clientX - rect.left - panX) / scale,
-    y: (clientY - rect.top  - panY) / scale
+    x: panX + vx / scale,
+    y: panY + vy / scale
   };
 }
 
-// ===== DRAWING PRIMITIVES =====
-function drawDot(x, y, color, size) {
+// ===================================================================
+// DRAWING ON OFFSCREEN
+// ===================================================================
+
+function offDrawDot(x, y, color, size) {
   const half = Math.floor(size / 2);
-  ctx.fillStyle = color;
-  ctx.fillRect(Math.floor(x) - half, Math.floor(y) - half, size, size);
+  offCtx.fillStyle = color;
+  offCtx.fillRect(Math.floor(x) - half, Math.floor(y) - half, size, size);
 }
 
-// Draw line on local canvas, returns array of pixel positions covered
-function drawLineLocal(x0, y0, x1, y1, color, size) {
+function offDrawLine(x0, y0, x1, y1, color, size) {
   const dist = Math.hypot(x1 - x0, y1 - y0);
   const steps = Math.max(Math.ceil(dist), 1);
   const half = Math.floor(size / 2);
-
-  ctx.fillStyle = color;
+  offCtx.fillStyle = color;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     const x = Math.round(x0 + (x1 - x0) * t);
     const y = Math.round(y0 + (y1 - y0) * t);
-    ctx.fillRect(x - half, y - half, size, size);
+    offCtx.fillRect(x - half, y - half, size, size);
   }
 }
 
-// Replay a received segment on canvas
-// prevPoint: {x,y} or null if isFirst
+// Replay a received remote segment
 function replaySegment(points, color, size, prevPoint) {
   if (points.length === 0) return;
-
-  ctx.fillStyle = color;
   const half = Math.floor(size / 2);
+  offCtx.fillStyle = color;
 
-  function drawStep(x, y) {
-    ctx.fillRect(Math.floor(x) - half, Math.floor(y) - half, size, size);
+  function dot(x, y) {
+    offCtx.fillRect(Math.floor(x) - half, Math.floor(y) - half, size, size);
   }
-
-  function drawSegLine(x0, y0, x1, y1) {
+  function line(x0, y0, x1, y1) {
     const dist = Math.hypot(x1 - x0, y1 - y0);
     const steps = Math.max(Math.ceil(dist), 1);
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
-      drawStep(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t));
+      dot(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t));
     }
   }
 
-  // Connect from previous point if not first segment
-  const allPoints = prevPoint && !isNaN(prevPoint.x)
-    ? [prevPoint, ...points]
-    : points;
+  const all = (prevPoint && !isNaN(prevPoint.x)) ? [prevPoint, ...points] : points;
 
-  if (allPoints.length === 1) {
-    drawStep(allPoints[0].x, allPoints[0].y);
-    return;
-  }
-
-  for (let i = 1; i < allPoints.length; i++) {
-    drawSegLine(allPoints[i-1].x, allPoints[i-1].y, allPoints[i].x, allPoints[i].y);
+  if (all.length === 1) {
+    dot(all[0].x, all[0].y);
+  } else {
+    for (let i = 1; i < all.length; i++) {
+      line(all[i-1].x, all[i-1].y, all[i].x, all[i].y);
+    }
   }
 }
 
-// ===== FLOOD FILL =====
+// ===================================================================
+// FLOOD FILL
+// ===================================================================
+
 function floodFill(startX, startY, fillColor) {
   startX = Math.floor(startX);
   startY = Math.floor(startY);
+  if (startX < 0 || startX >= CANVAS_W || startY < 0 || startY >= CANVAS_H) return;
 
-  const imageData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
+  const imageData = offCtx.getImageData(0, 0, CANVAS_W, CANVAS_H);
   const data = imageData.data;
 
-  function idx(x, y) { return (y * CANVAS_W + x) * 4; }
-
+  const idx = (x, y) => (y * CANVAS_W + x) * 4;
   const si = idx(startX, startY);
   const sr = data[si], sg = data[si+1], sb = data[si+2];
 
@@ -239,53 +226,46 @@ function floodFill(startX, startY, fillColor) {
     stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
   }
 
-  ctx.putImageData(imageData, 0, 0);
+  offCtx.putImageData(imageData, 0, 0);
+  renderView();
 
-  // Emit in batches of 500
   for (let i = 0; i < changed.length; i += 500) {
     socket.emit('fill:place', { pixels: changed.slice(i, i+500), color: fillColor });
   }
 }
 
-// ===== EYEDROPPER =====
-function pickColor(x, y) {
-  const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-  currentColor = rgbToHex(p[0], p[1], p[2]);
-  colorPicker.value = currentColor;
-  addRecentColor(currentColor);
+// ===================================================================
+// EYEDROPPER
+// ===================================================================
+
+function pickColor(ox, oy) {
+  const x = Math.max(0, Math.min(CANVAS_W - 1, Math.floor(ox)));
+  const y = Math.max(0, Math.min(CANVAS_H - 1, Math.floor(oy)));
+  const p = offCtx.getImageData(x, y, 1, 1).data;
+  const c = rgbToHex(p[0], p[1], p[2]);
+  currentColor = c;
+  colorPicker.value = c;
+  addRecentColor(c);
   setTool('brush');
-  showToast('Color picked: ' + currentColor);
+  showToast('Color picked: ' + c);
 }
 
-// ===== COLOR UTILS =====
-function hexToRgb(hex) {
-  return [
-    parseInt(hex.slice(1,3),16),
-    parseInt(hex.slice(3,5),16),
-    parseInt(hex.slice(5,7),16)
-  ];
-}
-function rgbToHex(r,g,b) {
-  return '#' + [r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
-}
-
-// ===== STROKE BUFFERING (LOCAL -> SERVER) =====
-// We send segments of points regularly so the server+others can replay smoothly.
-// Key fix: each segment carries isFirst and the strokeId so receivers
-// can stitch segments together without gaps.
+// ===================================================================
+// STROKE BUFFERING -> SERVER
+// ===================================================================
 
 function flushStroke() {
-  if (strokePointBuffer.length === 0) return;
+  if (!currentStrokeId || strokeBuffer.length === 0) return;
   socket.emit('stroke:segment', {
     strokeId: currentStrokeId,
-    points: [...strokePointBuffer],
+    points: [...strokeBuffer],
     color: currentTool === 'eraser' ? '#ffffff' : currentColor,
     size: brushSize,
     isFirst: isFirstSegment
   });
   isFirstSegment = false;
-  // Keep last point as overlap so next segment connects seamlessly
-  strokePointBuffer = [strokePointBuffer[strokePointBuffer.length - 1]];
+  // Keep last point as bridge to next segment
+  strokeBuffer = [strokeBuffer[strokeBuffer.length - 1]];
 }
 
 function scheduleFlush() {
@@ -293,88 +273,145 @@ function scheduleFlush() {
     strokeFlushTimer = setTimeout(() => {
       flushStroke();
       strokeFlushTimer = null;
-    }, 30); // 30ms batching - low latency
+    }, 25);
   }
 }
 
-// ===== TOOL SELECTION =====
+// ===================================================================
+// TOOLS
+// ===================================================================
+
 function setTool(tool) {
   currentTool = tool;
-  document.querySelectorAll('.tool-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tool === tool);
+  document.querySelectorAll('.tool-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tool === tool);
   });
+  const names = { brush:'Brush', eraser:'Eraser', fill:'Fill', eyedropper:'Color Picker' };
+  statusTool.textContent = 'Tool: ' + (names[tool] || tool);
 
-  const toolNames = { brush:'Brush', eraser:'Eraser', fill:'Fill', eyedropper:'Color Picker' };
-  statusTool.textContent = 'Tool: ' + (toolNames[tool] || tool);
-
-  switch(tool) {
-    case 'eyedropper': canvasWrapper.style.cursor = 'crosshair'; break;
-    case 'fill':       canvasWrapper.style.cursor = 'cell'; break;
-    default:           canvasWrapper.style.cursor = 'crosshair';
+  switch (tool) {
+    case 'fill':       canvasArea.style.cursor = 'cell'; break;
+    case 'eyedropper': canvasArea.style.cursor = 'crosshair'; break;
+    default:           canvasArea.style.cursor = 'crosshair';
   }
 }
 
-document.querySelectorAll('.tool-btn').forEach(btn => {
-  btn.addEventListener('mousedown', (e) => {
-    e.stopPropagation();
-    setTool(btn.dataset.tool);
+// ===================================================================
+// PALETTE
+// ===================================================================
+
+PALETTE.forEach(color => {
+  const s = document.createElement('div');
+  s.className = 'palette-swatch';
+  s.style.background = color;
+  s.title = color;
+  s.addEventListener('click', () => { currentColor = color; colorPicker.value = color; });
+  paletteEl.appendChild(s);
+});
+
+function addRecentColor(color) {
+  if (recentColors[0] === color) return;
+  recentColors = [color, ...recentColors.filter(c => c !== color)].slice(0, 8);
+  renderRecent();
+}
+
+function renderRecent() {
+  recentColorsEl.innerHTML = '';
+  recentColors.forEach(color => {
+    const s = document.createElement('div');
+    s.className = 'recent-swatch';
+    s.style.background = color;
+    s.title = color;
+    s.addEventListener('click', () => { currentColor = color; colorPicker.value = color; });
+    recentColorsEl.appendChild(s);
   });
-});
+}
 
-// ===== COLOR / SIZE CONTROLS =====
-colorPicker.addEventListener('input', e => { currentColor = e.target.value; });
-colorPicker.addEventListener('change', e => { addRecentColor(e.target.value); });
+// ===================================================================
+// TOAST
+// ===================================================================
 
-brushSizeInput.addEventListener('input', e => {
-  brushSize = parseInt(e.target.value);
-  brushSizeLabel.textContent = brushSize;
-  statusSize.textContent = 'Size: ' + brushSize + 'px';
-});
+let toastTimer = null;
+function showToast(msg, duration = 3000) {
+  toastText.textContent = msg;
+  toastWindow.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastWindow.style.display = 'none'; }, duration);
+}
 
-// ===== MOUSE EVENTS =====
-canvasWrapper.addEventListener('mousedown', (e) => {
+// ===================================================================
+// ZOOM / PAN
+// ===================================================================
+
+function zoomAt(vx, vy, factor) {
+  // vx, vy = view-space pivot point
+  const offPivotX = panX + vx / scale;
+  const offPivotY = panY + vy / scale;
+
+  scale = Math.min(Math.max(scale * factor, 0.2), 12);
+
+  panX = offPivotX - vx / scale;
+  panY = offPivotY - vy / scale;
+
+  renderView();
+}
+
+// ===================================================================
+// MOUSE EVENTS
+// ===================================================================
+
+canvasArea.addEventListener('mousedown', (e) => {
   e.preventDefault();
 
-  // Middle or right click -> pan
   if (e.button === 1 || e.button === 2) {
     isPanning = true;
-    panStartX = e.clientX;
-    panStartY = e.clientY;
-    panOriginX = panX;
-    panOriginY = panY;
-    canvasWrapper.style.cursor = 'move';
+    panStartMouseX = e.clientX;
+    panStartMouseY = e.clientY;
+    panStartX = panX;
+    panStartY = panY;
+    canvasArea.style.cursor = 'move';
     return;
   }
 
   if (e.button !== 0) return;
 
-  const { x, y } = getCanvasPos(e.clientX, e.clientY);
+  const rect = canvasArea.getBoundingClientRect();
+  const vx = e.clientX - rect.left;
+  const vy = e.clientY - rect.top;
+  const { x, y } = viewToOff(vx, vy);
+
   if (x < 0 || x >= CANVAS_W || y < 0 || y >= CANVAS_H) return;
 
   if (currentTool === 'eyedropper') { pickColor(x, y); return; }
   if (currentTool === 'fill')       { floodFill(x, y, currentColor); return; }
 
-  // Start stroke
   isDrawing = true;
   lastX = x;
   lastY = y;
-  currentStrokeId = Date.now() + '_' + Math.random().toString(36).slice(2);
+  currentStrokeId = Date.now() + '_' + Math.random().toString(36).slice(2, 9);
   isFirstSegment = true;
-  strokePointBuffer = [{ x: Math.floor(x), y: Math.floor(y) }];
+  strokeBuffer = [{ x: Math.floor(x), y: Math.floor(y) }];
 
   const color = currentTool === 'eraser' ? '#ffffff' : currentColor;
-  drawDot(x, y, color, brushSize);
+  offDrawDot(x, y, color, brushSize);
+  renderView();
   scheduleFlush();
 });
 
-canvasWrapper.addEventListener('mousemove', (e) => {
-  const { x, y } = getCanvasPos(e.clientX, e.clientY);
+canvasArea.addEventListener('mousemove', (e) => {
+  const rect = canvasArea.getBoundingClientRect();
+  const vx = e.clientX - rect.left;
+  const vy = e.clientY - rect.top;
+  const { x, y } = viewToOff(vx, vy);
+
   statusCoords.textContent = `X: ${Math.floor(x)}, Y: ${Math.floor(y)}`;
 
   if (isPanning) {
-    panX = panOriginX + (e.clientX - panStartX);
-    panY = panOriginY + (e.clientY - panStartY);
-    applyTransform();
+    const dx = (e.clientX - panStartMouseX) / scale;
+    const dy = (e.clientY - panStartMouseY) / scale;
+    panX = panStartX - dx;
+    panY = panStartY - dy;
+    renderView();
     return;
   }
 
@@ -385,11 +422,10 @@ canvasWrapper.addEventListener('mousemove', (e) => {
   const cx = Math.floor(x), cy = Math.floor(y);
   const lx = Math.floor(lastX), ly = Math.floor(lastY);
 
-  // Draw locally
-  drawLineLocal(lx, ly, cx, cy, color, brushSize);
+  offDrawLine(lx, ly, cx, cy, color, brushSize);
+  renderView();
 
-  // Buffer for network
-  strokePointBuffer.push({ x: cx, y: cy });
+  strokeBuffer.push({ x: cx, y: cy });
   scheduleFlush();
 
   lastX = x;
@@ -405,32 +441,34 @@ window.addEventListener('mouseup', (e) => {
   if (!isDrawing) return;
   isDrawing = false;
 
-  // Flush remaining buffer
   clearTimeout(strokeFlushTimer);
   strokeFlushTimer = null;
   flushStroke();
-  strokePointBuffer = [];
+  strokeBuffer = [];
   currentStrokeId = null;
-
-  addRecentColor(currentColor);
   lastX = null;
   lastY = null;
+  addRecentColor(currentColor);
 });
 
-// Scroll to zoom
-canvasWrapper.addEventListener('wheel', (e) => {
+canvasArea.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const factor = e.deltaY < 0 ? 1.15 : (1/1.15);
-  zoomAt(e.clientX - canvasWrapper.getBoundingClientRect().left,
-         e.clientY - canvasWrapper.getBoundingClientRect().top, factor);
+  const rect = canvasArea.getBoundingClientRect();
+  const vx = e.clientX - rect.left;
+  const vy = e.clientY - rect.top;
+  const factor = e.deltaY < 0 ? 1.15 : (1 / 1.15);
+  zoomAt(vx, vy, factor);
 }, { passive: false });
 
-canvasWrapper.addEventListener('contextmenu', e => e.preventDefault());
+canvasArea.addEventListener('contextmenu', e => e.preventDefault());
 
-// ===== KEYBOARD =====
+// ===================================================================
+// KEYBOARD
+// ===================================================================
+
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
-  switch(e.key.toLowerCase()) {
+  switch (e.key.toLowerCase()) {
     case 'b': setTool('brush'); break;
     case 'e': setTool('eraser'); break;
     case 'f': setTool('fill'); break;
@@ -450,7 +488,24 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// ===== MENU =====
+// ===================================================================
+// CONTROLS
+// ===================================================================
+
+colorPicker.addEventListener('input', e => { currentColor = e.target.value; });
+colorPicker.addEventListener('change', e => { addRecentColor(e.target.value); });
+
+brushSizeInput.addEventListener('input', e => {
+  brushSize = parseInt(e.target.value);
+  brushSizeLabel.textContent = brushSize;
+  statusSize.textContent = 'Size: ' + brushSize + 'px';
+});
+
+document.querySelectorAll('.tool-btn').forEach(btn => {
+  btn.addEventListener('mousedown', (e) => { e.stopPropagation(); setTool(btn.dataset.tool); });
+});
+
+// Menu toggles
 document.querySelectorAll('.menu-item').forEach(item => {
   item.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -466,26 +521,17 @@ window.addEventListener('click', () => {
 document.getElementById('save-btn').addEventListener('click', () => {
   const link = document.createElement('a');
   link.download = 'paintarchy.png';
-  link.href = canvas.toDataURL();
+  link.href = offscreen.toDataURL();
   link.click();
   showToast('Canvas saved as PNG.');
 });
 
-document.getElementById('zoom-in-btn').addEventListener('click', () => {
-  zoomAt(canvasWrapper.clientWidth/2, canvasWrapper.clientHeight/2, 1.5);
-});
-document.getElementById('zoom-out-btn').addEventListener('click', () => {
-  zoomAt(canvasWrapper.clientWidth/2, canvasWrapper.clientHeight/2, 1/1.5);
-});
-document.getElementById('zoom-reset-btn').addEventListener('click', fitCanvas);
-document.getElementById('zoom-fit-btn').addEventListener('click', () => {
-  const ww = canvasWrapper.clientWidth;
-  const wh = canvasWrapper.clientHeight;
-  const s = Math.min(ww / CANVAS_W, wh / CANVAS_H);
-  scale = s;
-  panX = (ww - CANVAS_W * s) / 2;
-  panY = (wh - CANVAS_H * s) / 2;
-  applyTransform();
+document.getElementById('zoom-in-btn').addEventListener('click', () =>
+  zoomAt(viewCanvas.width / 2, viewCanvas.height / 2, 1.5));
+document.getElementById('zoom-out-btn').addEventListener('click', () =>
+  zoomAt(viewCanvas.width / 2, viewCanvas.height / 2, 1 / 1.5));
+document.getElementById('zoom-reset-btn').addEventListener('click', () => {
+  scale = 1; panX = 0; panY = 0; renderView();
 });
 
 document.getElementById('help-btn').addEventListener('click', () => {
@@ -498,82 +544,97 @@ document.getElementById('help-ok').addEventListener('click', () => {
   helpDialog.style.display = 'none';
 });
 
-// ===== SOCKET EVENTS =====
+// ===================================================================
+// RESIZE HANDLER
+// ===================================================================
+
+window.addEventListener('resize', resizeViewCanvas);
+
+// ===================================================================
+// SOCKET EVENTS
+// ===================================================================
+
 socket.on('connect', () => {
   statusConn.textContent = 'Connected';
+  loadingLabel.textContent = 'Loading canvas data...';
 });
 
 socket.on('disconnect', () => {
   statusConn.textContent = 'Disconnected';
-  showToast('Disconnected from server. Reconnecting...');
+  showToast('Disconnected from server. Attempting to reconnect...', 5000);
 });
 
-socket.on('canvas:init', ({ width, height, pixels }) => {
+socket.on('connect_error', (err) => {
+  loadingLabel.textContent = 'Connection error: ' + err.message;
+  statusConn.textContent = 'Error';
+});
+
+socket.on('canvas:meta', ({ width, height }) => {
   CANVAS_W = width;
   CANVAS_H = height;
-  canvas.width = CANVAS_W;
-  canvas.height = CANVAS_H;
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-
-  // Animate loading bar while drawing pixels
-  const total = pixels.length;
-  let i = 0;
-  const BATCH = 5000;
-
-  function drawBatch() {
-    const end = Math.min(i + BATCH, total);
-    for (; i < end; i++) {
-      const { x, y, color } = pixels[i];
-      ctx.fillStyle = color;
-      ctx.fillRect(x, y, 1, 1);
-    }
-    loadingBar.style.width = (total > 0 ? (i / total * 100) : 100) + '%';
-    if (i < total) {
-      requestAnimationFrame(drawBatch);
-    } else {
-      loading.style.display = 'none';
-      fitCanvas();
-      showToast('Welcome to Paintarchy. Total anarchy awaits.');
-    }
-  }
-
-  if (total === 0) {
-    loading.style.display = 'none';
-    fitCanvas();
-    showToast('Welcome to Paintarchy. Total anarchy awaits.');
-  } else {
-    drawBatch();
-  }
+  initOffscreen();
+  loadingLabel.textContent = 'Receiving canvas pixels...';
 });
 
-// Remote stroke segments - stitch together using strokeId
+let totalChunksReceived = 0;
+
+socket.on('canvas:chunk', (pixels) => {
+  // Draw chunk onto offscreen
+  pixels.forEach(({ x, y, color }) => {
+    offCtx.fillStyle = color;
+    offCtx.fillRect(x, y, 1, 1);
+  });
+  totalChunksReceived += pixels.length;
+  // Rough progress based on chunk count (we don't know total ahead of time)
+  const progress = Math.min(90, totalChunksReceived / 100);
+  loadingBar.style.width = progress + '%';
+});
+
+socket.on('canvas:done', () => {
+  loadingBar.style.width = '100%';
+  setTimeout(() => {
+    loadingOverlay.style.display = 'none';
+    resizeViewCanvas(); // size view canvas to fit, then render
+    showToast('Welcome to Paintarchy. All is anarchy.');
+  }, 200);
+});
+
 socket.on('stroke:segment', ({ strokeId, points, color, size, isFirst }) => {
-  // Get the last known point for this stroke
-  let prevPoint = null;
-  if (!isFirst && remoteStrokes.has(strokeId)) {
-    prevPoint = remoteStrokes.get(strokeId);
-  }
+  const prevPoint = (!isFirst && remoteStrokes.has(strokeId))
+    ? remoteStrokes.get(strokeId)
+    : null;
 
   replaySegment(points, color, size, prevPoint);
 
-  // Store last point of this segment for next segment connection
   if (points.length > 0) {
     remoteStrokes.set(strokeId, points[points.length - 1]);
   }
 
-  // Cleanup old strokes (keep map lean)
-  if (remoteStrokes.size > 200) {
+  renderView();
+
+  // Prune old remote strokes
+  if (remoteStrokes.size > 500) {
     const firstKey = remoteStrokes.keys().next().value;
     remoteStrokes.delete(firstKey);
   }
 });
 
 socket.on('fill:place', ({ pixels, color }) => {
-  ctx.fillStyle = color;
-  pixels.forEach(({ x, y }) => ctx.fillRect(x, y, 1, 1));
+  offCtx.fillStyle = color;
+  pixels.forEach(({ x, y }) => offCtx.fillRect(x, y, 1, 1));
+  renderView();
 });
 
 socket.on('users:count', (count) => {
   statusUsers.textContent = 'Users: ' + count;
 });
+
+// ===================================================================
+// BOOT
+// ===================================================================
+
+// Init offscreen with defaults so we have something to show
+initOffscreen();
+// View canvas will be sized once canvas:done fires
+// but set it up now so resize works
+resizeViewCanvas();
