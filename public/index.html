@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Paintarchy 🎨</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header id="header">
+    <div id="logo">
+      🎨 <span>Paint</span>archy
+    </div>
+    <div id="header-right">
+      <div id="user-count">
+        <span class="dot"></span>
+        <span id="count-num">1</span> painter(s) online
+      </div>
+    </div>
+  </header>
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+
+    <div class="tool-group">
+      <label>Color</label>
+      <input type="color" id="color-picker" value="#e63946" />
+      <div id="recent-colors"></div>
+    </div>
+
+    <div class="tool-group">
+      <label>Brush Size</label>
+      <input type="range" id="brush-size" min="1" max="50" value="4" />
+      <span id="brush-size-label">4px</span>
+    </div>
+
+    <div class="tool-group">
+      <label>Tool</label>
+      <div id="tool-buttons">
+        <button class="tool-btn active" data-tool="brush" title="Brush">🖌️</button>
+        <button class="tool-btn" data-tool="fill" title="Fill Bucket">🪣</button>
+        <button class="tool-btn" data-tool="eyedropper" title="Eyedropper">💉</button>
+        <button class="tool-btn" data-tool="eraser" title="Eraser">🧹</button>
+      </div>
+    </div>
+
+    <div class="tool-group">
+      <label>Zoom</label>
+      <button id="zoom-out">−</button>
+      <span id="zoom-label">100%</span>
+      <button id="zoom-in">+</button>
+      <button id="zoom-reset">Reset</button>
+    </div>
+
+    <div class="tool-group">
+      <button id="save-btn">💾 Save PNG</button>
+    </div>
+
+  </div>
+
+  <!-- Canvas wrapper -->
+  <div id="canvas-wrapper">
+    <div id="canvas-container">
+      <canvas id="main-canvas"></canvas>
+      <div id="cursor-preview"></div>
+    </div>
+  </div>
+
+  <!-- Coordinates display -->
+  <div id="coords">X: 0, Y: 0</div>
+
+  <!-- Toast notification -->
+  <div id="toast"></div>
+
+  <!-- Loading overlay -->
+  <div id="loading">
+    <div id="loading-inner">
+      <div id="loading-spinner"></div>
+      <p>Loading Paintarchy...</p>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
